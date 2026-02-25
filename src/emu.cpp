@@ -26,6 +26,8 @@ using namespace std;
 #include <esp_spi_flash.h>
 #include <esp_attr.h>
 #include <esp_partition.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "rom/miniz.h"
 
 // only map 1 file at a time
@@ -149,7 +151,22 @@ public:
             return -1;
         #define BUF_SIZE 4096
         uint8_t* buf = new uint8_t[BUF_SIZE];
-        esp_err_t err;
+        if (!buf) {
+            fclose(f);
+            printf("CrapFS::copy failed to allocate buffer\n");
+            return -1;
+        }
+
+        uint32_t erase_size = (len + 0xFFF) & ~0xFFF;  // Round up to 4KB boundary
+        printf("CrapFS::copy erasing %d bytes at offset %08X\n", erase_size, offset);
+        esp_err_t err = esp_partition_erase_range(_part, offset, erase_size);
+        if (err) {
+            printf("CrapFS::copy erase failed: %d\n", err);
+            fclose(f);
+            delete buf;
+            return err;
+        }
+
         int i = 0;
         while (i < len) {
             int n = len-i;
@@ -158,9 +175,16 @@ public:
             fread(buf,1,n,f);
             printf("CrapFS::copy writing %d of %d\n",i,len);
             err = esp_partition_write(_part, i + offset, buf, n);
-            if (err)
+            if (err) {
+                printf("CrapFS::copy write failed: %d\n", err);
                 break;
+            }
             i += n;
+
+            // Feed watchdog every 64KB to prevent timeout on large files
+            if ((i & 0xFFFF) == 0) {
+                vTaskDelay(1);  // Yield to watchdog task
+            }
         }
         fclose(f);
         delete buf;
@@ -277,7 +301,7 @@ int unpack(const char* dst, const uint8_t* d, int len)
 
     tinfl_decompressor* dec = new tinfl_decompressor;   // largist
     size_t in_bytes, out_bytes;
-    tinfl_status status;
+    tinfl_status status = TINFL_STATUS_FAILED;  // Initialize to avoid warning
     int i = 0;
 
     tinfl_init(dec);
