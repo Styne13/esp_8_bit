@@ -456,7 +456,7 @@ public:
     uint8_t _txid;
     map<int,L2CAPSocket*> _sockets;
 
-    BTDevice() : _packet_pos(0),_txid(1),_flags(SLAVE)
+    BTDevice() : _flags(SLAVE),_packet_pos(0),_txid(1)
     {
     }
 
@@ -849,7 +849,7 @@ public:
         return create_connection(*d);
     }
 
-    HCI(const char* localname) : _localname(localname),_state(-1),_cid(0x40)
+    HCI(const char* localname) : _state(-1),_localname(localname),_cid(0x40)
     {
         _hci = hci_open();
         if (!_hci)
