@@ -139,6 +139,121 @@ typedef struct {
 extern wii_state wii_states[4];
 uint32_t wii_map(int index, const uint32_t* common, const uint32_t* classic);
 
+//==================================================================
+// Nintendo Switch Controller Support
+
+// FSM states for controller initialization
+enum switch_init_state {
+    SWITCH_STATE_UNINIT,
+    SWITCH_STATE_SETUP,
+    SWITCH_STATE_REQ_DEV_INFO,
+    SWITCH_STATE_READ_FACTORY_STICK_CAL,
+    SWITCH_STATE_READ_USER_STICK_CAL,
+    SWITCH_STATE_READ_FACTORY_IMU_CAL,
+    SWITCH_STATE_SET_FULL_REPORT,
+    SWITCH_STATE_ENABLE_IMU,
+    SWITCH_STATE_UPDATE_LED,
+    SWITCH_STATE_READY,
+};
+
+// Subcommand IDs
+enum switch_subcmd {
+    SWITCH_SUBCMD_REQ_DEV_INFO = 0x02,
+    SWITCH_SUBCMD_SET_REPORT_MODE = 0x03,
+    SWITCH_SUBCMD_SPI_FLASH_READ = 0x10,
+    SWITCH_SUBCMD_SET_PLAYER_LEDS = 0x30,
+    SWITCH_SUBCMD_ENABLE_IMU = 0x40,
+};
+
+// Controller types
+enum switch_controller_types {
+    SWITCH_CONTROLLER_TYPE_JCL = 0x01,   // Joy-con left
+    SWITCH_CONTROLLER_TYPE_JCR = 0x02,   // Joy-con right
+    SWITCH_CONTROLLER_TYPE_PRO = 0x03,   // Pro Controller
+    SWITCH_CONTROLLER_TYPE_SNES = 0x0b,  // SNES Controller
+};
+
+// SPI Flash memory addresses for calibration data
+#define SWITCH_FACTORY_STICK_CAL_ADDR_LEFT  0x603d
+#define SWITCH_FACTORY_STICK_CAL_ADDR_RIGHT 0x6046
+#define SWITCH_USER_STICK_CAL_ADDR_LEFT     0x8010
+#define SWITCH_USER_STICK_CAL_ADDR_RIGHT    0x801B
+#define SWITCH_FACTORY_IMU_CAL_ADDR         0x6020
+
+#define SWITCH_FACTORY_STICK_CAL_SIZE       9
+#define SWITCH_USER_STICK_CAL_SIZE          11
+#define SWITCH_FACTORY_IMU_CAL_SIZE         24
+
+enum switch_flags {
+    switch_controller = 0x10,
+    switch_joycon_left = 0x20,
+    switch_joycon_right = 0x40,
+    switch_pro_controller = 0x80,
+
+    // Button flags for Switch controllers
+    // Pro Controller / Combined Joy-Cons button layout
+    switch_a = 0x0001,
+    switch_b = 0x0002,
+    switch_x = 0x0004,
+    switch_y = 0x0008,
+    switch_l = 0x0010,
+    switch_r = 0x0020,
+    switch_zl = 0x0040,
+    switch_zr = 0x0080,
+    switch_minus = 0x0100,
+    switch_plus = 0x0200,
+    switch_lstick = 0x0400,
+    switch_rstick = 0x0800,
+    switch_home = 0x1000,
+    switch_capture = 0x2000,
+    switch_up = 0x10000,
+    switch_down = 0x20000,
+    switch_left = 0x40000,
+    switch_right = 0x80000,
+};
+
+// Calibration structure for sticks
+struct switch_cal_stick {
+    int32_t min;
+    int32_t center;
+    int32_t max;
+};
+
+typedef struct {
+    uint32_t flags;
+    uint8_t report[64];
+    uint32_t buttons;  // Changed from uint16_t to support D-pad flags
+    uint8_t lstick_x;
+    uint8_t lstick_y;
+    uint8_t rstick_x;
+    uint8_t rstick_y;
+    uint8_t battery;
+
+    // FSM state for initialization
+    switch_init_state init_state;
+    uint8_t controller_type;
+    uint8_t packet_num;  // Incremented for each subcommand
+
+    // For change detection to reduce input spam
+    uint32_t last_buttons;
+    uint8_t last_lstick_x;
+    uint8_t last_lstick_y;
+
+    // Calibration data
+    switch_cal_stick cal_x;
+    switch_cal_stick cal_y;
+    switch_cal_stick cal_rx;
+    switch_cal_stick cal_ry;
+
+    uint32_t get_buttons() {
+        return buttons;
+    }
+} switch_state;
+
+// report all of the switch controller states
+extern switch_state switch_states[4];
+uint32_t switch_map(int index, const uint32_t* buttons);
+
 // minimal hid interface
 int hid_init(const char* local_name);
 int hid_update();

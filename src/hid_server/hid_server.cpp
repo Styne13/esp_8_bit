@@ -494,8 +494,12 @@ public:
 enum {
     WII_DEVICE_CLASS = 0x042500,       // Nintendo RVL-CNT-01
     WII_TR_DEVICE_CLASS = 0x080500,    // Nintendo RVL-CNT-01-TR, has motion plus
+    SWITCH_PRO_DEVICE_CLASS = 0x082500,    // Nintendo Switch Pro Controller
+    SWITCH_JOYCON_L_DEVICE_CLASS = 0x082500,   // Nintendo Switch Joy-Con (L)
+    SWITCH_JOYCON_R_DEVICE_CLASS = 0x082500,   // Nintendo Switch Joy-Con (R)
 };
 wii_state wii_states[4] = {0};
+switch_state switch_states[4] = {0};
 
 // https://wiibrew.org/wiki/Wiimote
 // https://github.com/dvdhrm/xwiimote/blob/master/doc/PROTOCOL
@@ -658,7 +662,6 @@ public:
                 break;
 
             case 0x22: // Command Status
-                printf("report: %02X\n",h[2]);
                 if (!(state->flags & extension_read)) {
                     read_extention_type(d->_interrupt);
                     state->flags |= extension_read;
@@ -682,6 +685,541 @@ public:
 
             default:
                 printf("unhandled hid %02X\n",data[1]);
+        }
+    }
+};
+
+//==================================================================
+//==================================================================
+//  Nintendo Switch Controller Support
+//  Supports Pro Controller, Joy-Con (L), Joy-Con (R)
+
+// References:
+// https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering
+// https://github.com/Dan-Shields/node-switchbot
+// https://github.com/ricardoquesada/bluepad32
+
+class SWITCH {
+public:
+    void send(int s, const uint8_t* data, int len)
+    {
+        l2_send(s, data, len);
+    }
+
+    // Send subcommand with proper packet structure
+    void send_subcmd(int s, switch_state* state, uint8_t subcmd, const uint8_t* data, int data_len)
+    {
+        uint8_t buf[64];
+        memset(buf, 0, sizeof(buf));
+
+        buf[0] = 0xA1;  // HID report type (matches receive side)
+        buf[1] = 0x01;  // Output report ID: OUTPUT_RUMBLE_AND_SUBCMD
+        buf[2] = state->packet_num++;  // packet_num
+
+        // Rumble data (neutral values)
+        buf[3] = 0x00;
+        buf[4] = 0x01;
+        buf[5] = 0x40;
+        buf[6] = 0x40;
+        buf[7] = 0x00;
+        buf[8] = 0x01;
+        buf[9] = 0x40;
+        buf[10] = 0x40;
+
+        buf[11] = subcmd;  // Subcommand ID
+
+        if (state->packet_num > 0x0F)
+            state->packet_num = 0;
+
+        // Copy subcommand data if provided
+        if (data && data_len > 0) {
+            memcpy(buf + 12, data, min(data_len, 52));
+        }
+
+        send(s, buf, 12 + data_len);
+    }
+
+    // Request device info (subcommand 0x02)
+    void fsm_request_device_info(int s, switch_state* state)
+    {
+        state->init_state = SWITCH_STATE_REQ_DEV_INFO;
+        send_subcmd(s, state, SWITCH_SUBCMD_REQ_DEV_INFO, nullptr, 0);
+    }
+
+    // Read factory stick calibration (subcommand 0x10)
+    void fsm_read_factory_stick_calibration(int s, switch_state* state)
+    {
+        state->init_state = SWITCH_STATE_READ_FACTORY_STICK_CAL;
+
+        // Determine address based on controller type
+        uint32_t spi_addr = (state->controller_type == SWITCH_CONTROLLER_TYPE_JCR)
+                            ? SWITCH_FACTORY_STICK_CAL_ADDR_RIGHT
+                            : SWITCH_FACTORY_STICK_CAL_ADDR_LEFT;
+        uint8_t bytes_to_read = SWITCH_FACTORY_STICK_CAL_SIZE;
+
+        // For Pro Controller, read both left and right
+        if (state->controller_type == SWITCH_CONTROLLER_TYPE_PRO)
+            bytes_to_read *= 2;
+
+        uint8_t data[5] = {
+            (uint8_t)(spi_addr & 0xFF),
+            (uint8_t)((spi_addr >> 8) & 0xFF),
+            (uint8_t)((spi_addr >> 16) & 0xFF),
+            (uint8_t)((spi_addr >> 24) & 0xFF),
+            bytes_to_read
+        };
+
+        send_subcmd(s, state, SWITCH_SUBCMD_SPI_FLASH_READ, data, 5);
+    }
+
+    // Read user stick calibration (subcommand 0x10)
+    void fsm_read_user_stick_calibration(int s, switch_state* state)
+    {
+        state->init_state = SWITCH_STATE_READ_USER_STICK_CAL;
+
+        uint32_t spi_addr = (state->controller_type == SWITCH_CONTROLLER_TYPE_JCR)
+                            ? SWITCH_USER_STICK_CAL_ADDR_RIGHT
+                            : SWITCH_USER_STICK_CAL_ADDR_LEFT;
+        uint8_t bytes_to_read = SWITCH_USER_STICK_CAL_SIZE;
+
+        if (state->controller_type == SWITCH_CONTROLLER_TYPE_PRO)
+            bytes_to_read *= 2;
+
+        uint8_t data[5] = {
+            (uint8_t)(spi_addr & 0xFF),
+            (uint8_t)((spi_addr >> 8) & 0xFF),
+            (uint8_t)((spi_addr >> 16) & 0xFF),
+            (uint8_t)((spi_addr >> 24) & 0xFF),
+            bytes_to_read
+        };
+
+        send_subcmd(s, state, SWITCH_SUBCMD_SPI_FLASH_READ, data, 5);
+    }
+
+    // Read factory IMU calibration (subcommand 0x10)
+    void fsm_read_factory_imu_calibration(int s, switch_state* state)
+    {
+        state->init_state = SWITCH_STATE_READ_FACTORY_IMU_CAL;
+
+        uint32_t spi_addr = SWITCH_FACTORY_IMU_CAL_ADDR;
+        uint8_t data[5] = {
+            (uint8_t)(spi_addr & 0xFF),
+            (uint8_t)((spi_addr >> 8) & 0xFF),
+            (uint8_t)((spi_addr >> 16) & 0xFF),
+            (uint8_t)((spi_addr >> 24) & 0xFF),
+            SWITCH_FACTORY_IMU_CAL_SIZE
+        };
+
+        send_subcmd(s, state, SWITCH_SUBCMD_SPI_FLASH_READ, data, 5);
+    }
+
+    // Set full report mode 0x30 (subcommand 0x03)
+    void fsm_set_full_report(int s, switch_state* state)
+    {
+        state->init_state = SWITCH_STATE_SET_FULL_REPORT;
+
+        uint8_t data[1] = {0x30};  // Standard full mode
+        send_subcmd(s, state, SWITCH_SUBCMD_SET_REPORT_MODE, data, 1);
+    }
+
+    // Enable/disable IMU (subcommand 0x40)
+    void fsm_enable_imu(int s, switch_state* state)
+    {
+        state->init_state = SWITCH_STATE_ENABLE_IMU;
+
+        uint8_t data[1] = {0x00};  // Disable IMU for now (can be 0x01 to enable)
+        send_subcmd(s, state, SWITCH_SUBCMD_ENABLE_IMU, data, 1);
+    }
+
+    // Update player LED (subcommand 0x30)
+    void fsm_update_led(int s, switch_state* state, uint8_t led_mask)
+    {
+        state->init_state = SWITCH_STATE_UPDATE_LED;
+
+        uint8_t data[1] = {led_mask};
+        send_subcmd(s, state, SWITCH_SUBCMD_SET_PLAYER_LEDS, data, 1);
+    }
+
+    // Mark controller as ready
+    void fsm_ready(switch_state* state)
+    {
+        state->init_state = SWITCH_STATE_READY;
+    }
+
+    // Process FSM - advance to next state
+    void process_fsm(InputDevice* d)
+    {
+        int slot = d->_wii_index;
+        if (slot == -1)
+            return;
+
+        switch_state* state = switch_states + slot;
+
+        switch (state->init_state) {
+            case SWITCH_STATE_SETUP:
+                fsm_request_device_info(d->_interrupt, state);
+                break;
+            case SWITCH_STATE_REQ_DEV_INFO:
+                fsm_read_factory_stick_calibration(d->_interrupt, state);
+                break;
+            case SWITCH_STATE_READ_FACTORY_STICK_CAL:
+                fsm_read_user_stick_calibration(d->_interrupt, state);
+                break;
+            case SWITCH_STATE_READ_USER_STICK_CAL:
+                fsm_read_factory_imu_calibration(d->_interrupt, state);
+                break;
+            case SWITCH_STATE_READ_FACTORY_IMU_CAL:
+                fsm_set_full_report(d->_interrupt, state);
+                break;
+            case SWITCH_STATE_SET_FULL_REPORT:
+                fsm_enable_imu(d->_interrupt, state);
+                break;
+            case SWITCH_STATE_ENABLE_IMU:
+                fsm_update_led(d->_interrupt, state, 0x01 << slot);
+                break;
+            case SWITCH_STATE_UPDATE_LED:
+                fsm_ready(state);
+                break;
+            case SWITCH_STATE_READY:
+                // Nothing to do
+                break;
+            default:
+                printf("Switch FSM: Unexpected state %d\n", state->init_state);
+                break;
+        }
+    }
+
+    bool is_switch(InputDevice* d)
+    {
+        if (strncmp(d->_name.c_str(), "Pro Controller", 14) == 0)
+            return true;
+        if (strncmp(d->_name.c_str(), "Joy-Con (L)", 11) == 0)
+            return true;
+        if (strncmp(d->_name.c_str(), "Joy-Con (R)", 11) == 0)
+            return true;
+        return d->_dev_class == SWITCH_PRO_DEVICE_CLASS;
+    }
+
+    // Determine controller type from name
+    uint8_t get_controller_type(InputDevice* d)
+    {
+        if (strncmp(d->_name.c_str(), "Pro Controller", 14) == 0)
+            return SWITCH_CONTROLLER_TYPE_PRO;
+        if (strncmp(d->_name.c_str(), "Joy-Con (L)", 11) == 0)
+            return SWITCH_CONTROLLER_TYPE_JCL;
+        if (strncmp(d->_name.c_str(), "Joy-Con (R)", 11) == 0)
+            return SWITCH_CONTROLLER_TYPE_JCR;
+        return SWITCH_CONTROLLER_TYPE_PRO; // Default to Pro Controller
+    }
+
+    // Find or assign a slot for this device
+    int find_slot(InputDevice* d)
+    {
+        if (d->_wii_index == -1)
+        {
+            for (int i = 0; i < 4; i++) {
+                if (switch_states[i].flags == 0) {
+                    uint8_t ctrl_type = get_controller_type(d);
+                    switch_states[i].flags = switch_controller;
+                    if (ctrl_type == SWITCH_CONTROLLER_TYPE_PRO)
+                        switch_states[i].flags |= switch_pro_controller;
+                    else if (ctrl_type == SWITCH_CONTROLLER_TYPE_JCL)
+                        switch_states[i].flags |= switch_joycon_left;
+                    else if (ctrl_type == SWITCH_CONTROLLER_TYPE_JCR)
+                        switch_states[i].flags |= switch_joycon_right;
+
+                    switch_states[i].init_state = SWITCH_STATE_SETUP;
+                    switch_states[i].controller_type = ctrl_type;
+                    switch_states[i].packet_num = 0;
+                    switch_states[i].last_buttons = 0;
+                    switch_states[i].last_lstick_x = 128;
+                    switch_states[i].last_lstick_y = 128;
+
+                    // Initialize default calibration values
+                    switch_states[i].cal_x.min = switch_states[i].cal_y.min = 512;
+                    switch_states[i].cal_x.center = switch_states[i].cal_y.center = 2048;
+                    switch_states[i].cal_x.max = switch_states[i].cal_y.max = 3583;
+                    switch_states[i].cal_rx.min = switch_states[i].cal_ry.min = 512;
+                    switch_states[i].cal_rx.center = switch_states[i].cal_ry.center = 2048;
+                    switch_states[i].cal_rx.max = switch_states[i].cal_ry.max = 3583;
+
+                    d->_wii_index = i;
+                    process_fsm(d);
+                    break;
+                }
+            }
+        }
+        return d->_wii_index;
+    }
+
+    // Parse stick calibration data from SPI flash
+    void parse_stick_calibration(switch_cal_stick* x, switch_cal_stick* y, const uint8_t* data, bool is_left)
+    {
+        int32_t cal_x_max, cal_y_max, cal_x_min, cal_y_min;
+
+        if (is_left) {
+            // Left stick: max, center, min
+            cal_x_max = data[0] | ((data[1] & 0x0F) << 8);
+            cal_y_max = (data[1] >> 4) | (data[2] << 4);
+            x->center = data[3] | ((data[4] & 0x0F) << 8);
+            y->center = (data[4] >> 4) | (data[5] << 4);
+            cal_x_min = data[6] | ((data[7] & 0x0F) << 8);
+            cal_y_min = (data[7] >> 4) | (data[8] << 4);
+        } else {
+            // Right stick: center, min, max
+            x->center = data[0] | ((data[1] & 0x0F) << 8);
+            y->center = (data[1] >> 4) | (data[2] << 4);
+            cal_x_min = data[3] | ((data[4] & 0x0F) << 8);
+            cal_y_min = (data[4] >> 4) | (data[5] << 4);
+            cal_x_max = data[6] | ((data[7] & 0x0F) << 8);
+            cal_y_max = (data[7] >> 4) | (data[8] << 4);
+        }
+
+        x->min = x->center - cal_x_min;
+        x->max = x->center + cal_x_max;
+        y->min = y->center - cal_y_min;
+        y->max = y->center + cal_y_max;
+    }
+
+    // Calibrate analog stick value using calibration data
+    int32_t calibrate_axis(int32_t v, switch_cal_stick cal)
+    {
+        int32_t ret;
+        if (v > cal.center) {
+            ret = (v - cal.center) * 128;
+            ret /= (cal.max - cal.center);
+        } else {
+            ret = (cal.center - v) * -128;
+            ret /= (cal.center - cal.min);
+        }
+        // Clamp to 0-255 range
+        ret += 128;
+        if (ret < 0) ret = 0;
+        if (ret > 255) ret = 255;
+        return ret;
+    }
+
+    // Parse button data from standard input report
+    void parse_buttons(switch_state* state, const uint8_t* data)
+    {
+        // Button data is in bytes 3, 4, 5 for standard input report 0x30
+        uint8_t btn_right = data[3];  // Right buttons (Y, X, B, A, SR, SL, R, ZR)
+        uint8_t btn_shared = data[4]; // Shared buttons (-, +, R-stick, L-stick, Home, Capture)
+        uint8_t btn_left = data[5];   // Left buttons (Down, Up, Right, Left, SR, SL, L, ZL)
+
+        state->buttons = 0;
+
+        // Right side buttons (Pro Controller / Joy-Con R)
+        if (btn_right & 0x01) state->buttons |= switch_y;
+        if (btn_right & 0x02) state->buttons |= switch_x;
+        if (btn_right & 0x04) state->buttons |= switch_b;
+        if (btn_right & 0x08) state->buttons |= switch_a;
+        if (btn_right & 0x40) state->buttons |= switch_r;
+        if (btn_right & 0x80) state->buttons |= switch_zr;
+
+        // Shared buttons
+        if (btn_shared & 0x01) state->buttons |= switch_minus;
+        if (btn_shared & 0x02) state->buttons |= switch_plus;
+        if (btn_shared & 0x04) state->buttons |= switch_rstick;
+        if (btn_shared & 0x08) state->buttons |= switch_lstick;
+        if (btn_shared & 0x10) state->buttons |= switch_home;
+        if (btn_shared & 0x20) state->buttons |= switch_capture;
+
+        // Left side buttons (Pro Controller / Joy-Con L)
+        if (btn_left & 0x01) state->buttons |= switch_down;
+        if (btn_left & 0x02) state->buttons |= switch_up;
+        if (btn_left & 0x04) state->buttons |= switch_right;
+        if (btn_left & 0x08) state->buttons |= switch_left;
+        if (btn_left & 0x40) state->buttons |= switch_l;
+        if (btn_left & 0x80) state->buttons |= switch_zl;
+    }
+
+    // Parse analog stick data from standard input report
+    void parse_sticks(switch_state* state, const uint8_t* data)
+    {
+        // Left stick: bytes 6, 7, 8
+        uint16_t lstick_x_raw = data[6] | ((data[7] & 0x0F) << 8);
+        uint16_t lstick_y_raw = (data[7] >> 4) | (data[8] << 4);
+
+        // Right stick: bytes 9, 10, 11
+        uint16_t rstick_x_raw = data[9] | ((data[10] & 0x0F) << 8);
+        uint16_t rstick_y_raw = (data[10] >> 4) | (data[11] << 4);
+
+        // Apply calibration
+        state->lstick_x = calibrate_axis(lstick_x_raw, state->cal_x);
+        state->lstick_y = calibrate_axis(lstick_y_raw, state->cal_y);
+        state->rstick_x = calibrate_axis(rstick_x_raw, state->cal_rx);
+        state->rstick_y = calibrate_axis(rstick_y_raw, state->cal_ry);
+    }
+
+    // Parse data from Simple HID mode (0x3F)
+    void parse_simple_hid(switch_state* state, const uint8_t* data, int len)
+    {
+        if (len < 13)
+            return;
+
+        // Format: A1 3F [2 bytes buttons] [1 byte hat] [8 bytes sticks]
+        uint16_t buttons_raw = data[2] | (data[3] << 8);
+        uint8_t hat = data[4];
+
+        // Parse buttons (bit positions may differ from standard mode)
+        state->buttons = 0;
+        if (buttons_raw & 0x0001) state->buttons |= switch_y;
+        if (buttons_raw & 0x0002) state->buttons |= switch_b;
+        if (buttons_raw & 0x0004) state->buttons |= switch_a;
+        if (buttons_raw & 0x0008) state->buttons |= switch_x;
+        if (buttons_raw & 0x0010) state->buttons |= switch_l;
+        if (buttons_raw & 0x0020) state->buttons |= switch_r;
+        if (buttons_raw & 0x0040) state->buttons |= switch_zl;
+        if (buttons_raw & 0x0080) state->buttons |= switch_zr;
+        if (buttons_raw & 0x0100) state->buttons |= switch_minus;
+        if (buttons_raw & 0x0200) state->buttons |= switch_plus;
+        if (buttons_raw & 0x0400) state->buttons |= switch_lstick;
+        if (buttons_raw & 0x0800) state->buttons |= switch_rstick;
+        if (buttons_raw & 0x1000) state->buttons |= switch_home;
+        if (buttons_raw & 0x2000) state->buttons |= switch_capture;
+
+        // Parse D-pad/hat (0x08 = centered, 0x00-0x07 = directions)
+        if (hat != 0x08) {
+            if (hat == 0x00 || hat == 0x01 || hat == 0x07) state->buttons |= switch_up;
+            if (hat == 0x01 || hat == 0x02 || hat == 0x03) state->buttons |= switch_right;
+            if (hat == 0x03 || hat == 0x04 || hat == 0x05) state->buttons |= switch_down;
+            if (hat == 0x05 || hat == 0x06 || hat == 0x07) state->buttons |= switch_left;
+        }
+
+        // Parse analog sticks
+        // Format appears to be: [low byte] [high byte] for each axis
+        // Centered position is 0x8000 (32768), scaled to 0-255 range
+        // For simplicity, just use the high byte which gives us 0-255 range centered at 128
+        state->lstick_x = data[6];  // High byte of left stick X
+        state->lstick_y = data[8];  // High byte of left stick Y
+        state->rstick_x = data[10]; // High byte of right stick X
+        state->rstick_y = data[12]; // High byte of right stick Y
+    }
+
+    // Handle subcommand reply (report 0x21)
+    void handle_subcmd_reply(InputDevice* d, switch_state* state, const uint8_t* data, int len)
+    {
+        if (len < 16) {
+            return;
+        }
+
+        // Report structure:
+        // [0] = 0xA1 (input report)
+        // [1] = 0x21 (subcmd reply)
+        // [2] = timer
+        // [3] = battery / connection info
+        // [4-15] = button/stick status
+        // [16] = ACK info
+        // [17] = subcmd ID
+        // [18+] = reply data
+
+        uint8_t ack = data[16];
+        uint8_t subcmd_id = data[17];
+
+        if ((ack & 0x80) == 0) {
+            return;
+        }
+
+        // Handle specific subcommand replies
+        switch (subcmd_id) {
+            case SWITCH_SUBCMD_REQ_DEV_INFO:
+                if (len >= 21) {
+                    state->controller_type = data[20];
+                }
+                break;
+
+            case SWITCH_SUBCMD_SPI_FLASH_READ:
+                if (len >= 23) {
+                    uint32_t addr = data[18] | (data[19] << 8) | (data[20] << 16) | (data[21] << 24);
+                    int data_len = data[22];
+                    const uint8_t* spi_data = data + 23;
+
+                    // Process based on current FSM state
+                    switch (state->init_state) {
+                        case SWITCH_STATE_READ_FACTORY_STICK_CAL:
+                            if (state->controller_type == SWITCH_CONTROLLER_TYPE_PRO && data_len >= 18) {
+                                parse_stick_calibration(&state->cal_x, &state->cal_y, spi_data, true);
+                                parse_stick_calibration(&state->cal_rx, &state->cal_ry, spi_data + 9, false);
+                            } else if (data_len >= 9) {
+                                bool is_left = (state->controller_type == SWITCH_CONTROLLER_TYPE_JCL);
+                                if (is_left)
+                                    parse_stick_calibration(&state->cal_x, &state->cal_y, spi_data, true);
+                                else
+                                    parse_stick_calibration(&state->cal_rx, &state->cal_ry, spi_data, false);
+                            }
+                            break;
+                        case SWITCH_STATE_READ_USER_STICK_CAL:
+                            // User calibration is optional - just use factory values
+                            break;
+                        case SWITCH_STATE_READ_FACTORY_IMU_CAL:
+                            // IMU calibration - can be skipped for basic functionality
+                            break;
+                    }
+                }
+                break;
+        }
+
+        // Advance FSM after processing reply
+        process_fsm(d);
+    }
+
+    void hid(InputDevice* d, const uint8_t* data, int len)
+    {
+        if (!is_switch(d))
+            return;
+
+        int slot = find_slot(d);
+        if (slot == -1)
+            return;
+
+        switch_state* state = switch_states + slot;
+
+        // Check report type
+        if (len < 2)
+            return;
+
+        switch (data[0]) {
+            case 0xA1:  // Input report
+                switch (data[1]) {
+                    case 0x21:  // Subcommand reply
+                        handle_subcmd_reply(d, state, data, len);
+                        // Also parse button/stick data embedded in the reply
+                        if (state->init_state == SWITCH_STATE_READY) {
+                            parse_buttons(state, data);
+                            parse_sticks(state, data);
+                            state->battery = (data[2] >> 4) & 0x0F;
+                        }
+                        break;
+
+                    case 0x30:  // Standard full mode (IMU data enabled)
+                    case 0x31:  // NFC/IR MCU mode
+                        if (state->init_state == SWITCH_STATE_READY) {
+                            memcpy(state->report, data, min((int)sizeof(state->report), len));
+                            parse_buttons(state, data);
+                            parse_sticks(state, data);
+                            state->battery = (data[2] >> 4) & 0x0F;
+                        }
+                        break;
+
+                    case 0x3F:  // Simple HID mode (used when connected to non-Switch devices)
+                        // Controller is in Simple HID mode - skip FSM and use it directly
+                        if (state->init_state != SWITCH_STATE_READY) {
+                            state->init_state = SWITCH_STATE_READY;
+                        }
+                        memcpy(state->report, data, min((int)sizeof(state->report), len));
+                        parse_simple_hid(state, data, len);
+                        break;
+
+                    default:
+                        // Silently ignore unknown report types to avoid console spam
+                        break;
+                }
+                break;
+
+            default:
+                // Silently ignore unknown report types
+                break;
         }
     }
 };
@@ -755,8 +1293,24 @@ void InputDevice::connection_complete(int status)
 void InputDevice::remote_name_response(const char* n)
 {
     _name = n;
+    printf("%s connected\n", name());
     gui_msg(name());
 
+    // Check if this is a Switch controller (Pro, Joy-Con L, Joy-Con R)
+    bool is_switch_controller = (strncmp(_name.c_str(), "Pro Controller", 14) == 0) ||
+                                 (strncmp(_name.c_str(), "Joy-Con (L)", 11) == 0) ||
+                                 (strncmp(_name.c_str(), "Joy-Con (R)", 11) == 0) ||
+                                 (_dev_class == SWITCH_PRO_DEVICE_CLASS);
+
+    // Switch controllers: ALWAYS skip authentication and SDP, even on reconnect
+    if (is_switch_controller) {
+        _control = l2_open(&_bdaddr, HID_CONTROL_PSM);
+        _interrupt = l2_open(&_bdaddr, HID_INTERRUPT_PSM);
+        _state = OPENING;
+        return;
+    }
+
+    // Non-Switch controllers: normal flow
     uint8_t key[16];
     if (_reconnect || (read_link_key(&_bdaddr,key) == 0))       // do we know this device?
     {
@@ -774,9 +1328,8 @@ void InputDevice::remote_name_response(const char* n)
 
 void InputDevice::authentication_complete(int status)
 {
-    // entered the wrong kb code...
     if (status)
-        printf("pin didn't work, won't create a link key: %d\n");
+        printf("Auth failed: %d\n",status);
 
     if (!_reconnect) {
         _control = l2_open(&_bdaddr, HID_CONTROL_PSM);
@@ -809,12 +1362,10 @@ const char* _nams[] = {
 
 void InputDevice::socket_changed(int socket, int state)
 {
-    printf("s:%d %s\n",socket,_nams[state]);
-    if ((socket == _sdp) && (state == L2CAP_OPEN))  // wait for sdp channel to be open before sending query
+    if ((socket == _sdp) && (state == L2CAP_OPEN))
         start_sdp();
-    else if ((socket == _control) && (state == L2CAP_OPEN)) {
-        //uint8_t protocol = 0x70;    // ask for boot protocol
-        //l2_send(_control,&protocol,1);
+    else if ((socket == _interrupt) && (state == L2CAP_OPEN || state == L2CAP_LISTENING)) {
+        // Switch controllers will auto-initialize when data is received
     }
 }
 
@@ -827,6 +1378,7 @@ class HIDSource {
     string _local_name;
     vector<InputDevice*> _devices;
     WII _wii;
+    SWITCH _switch;
 
     InputDevice* get_device(const bdaddr_t* bdaddr)
     {
@@ -898,6 +1450,7 @@ class HIDSource {
         const auto& cb = *((const cbdata*)data);
         switch (evt) {
             case CALLBACK_READY:
+                printf("HCI Ready\n");
                 hci_start_inquiry(5);       // inquire for 5 seconds
                 break;
 
@@ -906,6 +1459,7 @@ class HIDSource {
                 break;
 
             case CALLBACK_INQUIRY_DONE:
+                printf("Inquiry done, found %d devices\n", (int)_devices.size());
                 for (auto* id : _devices)
                     id->connect();
                 break;
@@ -922,7 +1476,7 @@ class HIDSource {
                     d->connection_request();
                 break;
 
-            case CALLBACK_DISCONNECTION_COMP:   // reconnect on disconnect?
+            case CALLBACK_DISCONNECTION_COMP:
                 d = get_device(&cb.bdaddr);
                 if (d)
                     d->disconnection_complete();
@@ -931,7 +1485,7 @@ class HIDSource {
             case CALLBACK_CONNECTION_COMPLETE:
                 d = get_device(&cb.ci.bdaddr);
                 if (d)
-                    d->connection_complete(cb.ci.status);    // device connection is complete, open l2cap sockets
+                    d->connection_complete(cb.ci.status);
                 break;
 
             case CALLBACK_AUTHENTICATION_COMPLETE:
@@ -945,7 +1499,7 @@ class HIDSource {
                 if (d)
                     d->socket_changed(cb.ss.socket,cb.ss.state);
                 break;
-                
+
             default:
                 break;
         }
@@ -972,10 +1526,11 @@ class HIDSource {
                 int len = l2_recv(d->_interrupt,dst,dst_len);
                 if (len > 0) {
                     _wii.hid(d,dst,len);
+                    _switch.hid(d,dst,len);
                     return len;
                 }
                 if (len < 0) {
-                    printf("hid shutting down TODO\n");
+                    printf("disconnect\n");
                     d->disconnection_complete();
                 }
             }
@@ -1034,5 +1589,27 @@ uint32_t wii_map(int index, const uint32_t* common, const uint32_t* classic)
                 r |= classic[i];
         }
     }
+    return r;
+}
+
+// map switch controller buttons
+uint32_t switch_map(int index, const uint32_t* buttons)
+{
+    uint32_t f = switch_states[index].flags;
+    if (!(f & switch_controller)) {
+        return 0;
+    }
+
+    uint32_t r = 0;
+    uint32_t pad = switch_states[index].get_buttons();
+
+    // Map button flags to emulator-specific values
+    // buttons array should contain 20 entries corresponding to switch button flags
+    for (int i = 0; i < 20; i++) {
+        if (pad & (1 << i)) {
+            r |= buttons[i];
+        }
+    }
+
     return r;
 }

@@ -390,21 +390,91 @@ public:
         0,                      //GENERIC_MENU    0x0001
     };
 
-    // raw HID data. handle WII/IR mappings
+    // Nintendo Switch Controller mapping for NES
+    // Maps Switch controller buttons to NES emulator events
+    const uint32_t _switch_nes[20] = {
+        event_joypad1_a_,       // switch_a (bit 0) - NES A button
+        event_joypad1_b_,       // switch_b (bit 1) - NES B button
+        0,                      // switch_x (bit 2) - not used
+        0,                      // switch_y (bit 3) - not used
+        0,                      // switch_l (bit 4) - not used
+        0,                      // switch_r (bit 5) - not used
+        0,                      // switch_zl (bit 6) - not used
+        0,                      // switch_zr (bit 7) - not used
+        event_joypad1_select_,  // switch_minus (bit 8) - NES Select
+        event_joypad1_start_,   // switch_plus (bit 9) - NES Start
+        0,                      // switch_lstick (bit 10) - not used
+        0,                      // switch_rstick (bit 11) - not used
+        0,                      // switch_home (bit 12) - Menu (handled separately)
+        0,                      // switch_capture (bit 13) - not used
+        0,                      // unused (bit 14)
+        0,                      // unused (bit 15)
+        event_joypad1_up_,      // switch_up (bit 16) - D-pad Up
+        event_joypad1_down_,    // switch_down (bit 17) - D-pad Down
+        event_joypad1_left_,    // switch_left (bit 18) - D-pad Left
+        event_joypad1_right_,   // switch_right (bit 19) - D-pad Right
+    };
+
+    // raw HID data. handle WII/IR/Switch mappings
     virtual void hid(const uint8_t* d, int len)
     {
-        if (d[0] != 0x32 && d[0] != 0x42)
+        // Check if this is a Wii remote report (gui_hid already stripped 0xA1 prefix)
+        bool is_wii_report = (d[0] == 0x32 || d[0] == 0x42);
+
+        // For non-Wii reports, try Switch controller (0x3F = Simple HID mode)
+        // Switch data is already parsed into switch_states[] by hid_server
+        bool is_switch_report = (d[0] == 0x3F);
+
+        if (!is_wii_report && !is_switch_report)
             return;
-        bool ir = *d++ == 0x42;
+
+        bool ir = (d[0] == 0x42);
+        if (is_wii_report)
+            d++; // Skip report ID for Wii
 
         for (int i = 0; i < 2; i++) {
-            uint32_t p;
-            if (ir) {
-                int m = d[0] + (d[1] << 8);
-                p = generic_map(m,_generic_nes);
-                d += 2;
-            } else
-                p = wii_map(i,_common_nes,_classic_nes);
+            uint32_t p = 0;
+
+            if (is_wii_report) {
+                if (ir) {
+                    int m = d[0] + (d[1] << 8);
+                    p = generic_map(m,_generic_nes);
+                    d += 2;
+                } else {
+                    // Try Wii controller
+                    p = wii_map(i,_common_nes,_classic_nes);
+                }
+            }
+
+            // Try Switch controller if this is a Switch report or no Wii input
+            if (is_switch_report || (!p && is_wii_report)) {
+                p |= switch_map(i, _switch_nes);
+
+                // Check for analog stick input on Switch controllers
+                // Map left stick to D-pad if buttons are not pressed
+                if (switch_states[i].flags & switch_controller) {
+                    uint8_t lx = switch_states[i].lstick_x;
+                    uint8_t ly = switch_states[i].lstick_y;
+
+                    // Map analog stick to D-pad (with deadzone ~80-175)
+                    if (lx < 80)
+                        p |= event_joypad1_left_;
+                    else if (lx > 175)
+                        p |= event_joypad1_right_;
+
+                    // Y-axis: lower values = up, higher values = down
+                    if (ly < 80)
+                        p |= event_joypad1_up_;
+                    else if (ly > 175)
+                        p |= event_joypad1_down_;
+
+                    // Check Home button for menu navigation
+                    if (switch_states[i].buttons & switch_home) {
+                        // Trigger menu by simulating GENERIC_MENU
+                        p |= 0x0001;  // This will be processed below
+                    }
+                }
+            }
 
             // reset on select + start held at the same time
             if ((p & event_joypad1_select_) && (p & event_joypad1_start_))

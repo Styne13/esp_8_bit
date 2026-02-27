@@ -1283,6 +1283,16 @@ private:
                         _localAddr = *((bdaddr_t*)(data+4)); // Local Address
                         _state |= MASK_READ_BD_ADDR;
 
+                        // Write local name to Bluetooth controller
+                        uint8_t name_buf[248] = {0};
+                        strncpy((char*)name_buf, _localname, 247);
+                        cmd(HCI_WRITE_LOCAL_NAME, name_buf, 248);
+                    }
+                        break;
+
+                    //  Init phase 3: After setting local name
+                    case HCI_WRITE_LOCAL_NAME:
+                    {
                         //uint8_t d[3] = {0x04, 0x05, 0x00};    // what should we look like?
                         uint8_t d[3] = {0x07, 0x02, 0x0C};      // smartphone?
                         cmd(HCI_WRITE_CLASS_OF_DEVICE,d,3);
@@ -1318,15 +1328,6 @@ private:
                             d->set_role(ri->role);
                     }
                     break;
-
-                /*
-                    case HCI_WRITE_LOCAL_NAME:
-                    {
-                        uint8_t d[3] = {0x04, 0x05, 0x00};
-                        cmd(HCI_WRITE_CLASS_OF_DEVICE,d,3);
-                    }
-                    break;
-                */
 
                     case HCI_READ_STORED_LINK_KEY:
                         break;
