@@ -25,6 +25,7 @@
 #include "config.h"
 #include "src/emu.h"
 #include "src/video_out.h"
+#include "src/sd_updater.h"
 
 //Long file name support
 //#define CONFIG_FATFS_LFN_STACK 1
@@ -149,6 +150,8 @@ void setup()
     
   rtc_clk_cpu_freq_set(RTC_CPU_FREQ_240M);  
   mount_filesystem();                       // mount the filesystem!
+  sd_update_check();                        // check for  sd card updates before starting emulator
+
   _emu = NewEmulator();                     // create the emulator!
   hid_init("emu32");                        // bluetooth hid on core 1!
 
