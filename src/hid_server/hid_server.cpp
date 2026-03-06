@@ -1007,31 +1007,27 @@ public:
         uint8_t btn_shared = data[4]; // Shared buttons (-, +, R-stick, L-stick, Home, Capture)
         uint8_t btn_left = data[5];   // Left buttons (Down, Up, Right, Left, SR, SL, L, ZL)
 
+        // Use lookup tables for faster button parsing
+        static const struct { uint8_t mask; uint32_t flag; } right_map[] = {
+            { 0x01, switch_y },   { 0x02, switch_x },
+            { 0x04, switch_b },   { 0x08, switch_a },
+            { 0x40, switch_r },   { 0x80, switch_zr },
+        };
+        static const struct { uint8_t mask; uint32_t flag; } shared_map[] = {
+            { 0x01, switch_minus },   { 0x02, switch_plus },
+            { 0x04, switch_rstick },  { 0x08, switch_lstick },
+            { 0x10, switch_home },    { 0x20, switch_capture },
+        };
+        static const struct { uint8_t mask; uint32_t flag; } left_map[] = {
+            { 0x01, switch_down },    { 0x02, switch_up },
+            { 0x04, switch_right },   { 0x08, switch_left },
+            { 0x40, switch_l },       { 0x80, switch_zl },
+        };
+
         state->buttons = 0;
-
-        // Right side buttons (Pro Controller / Joy-Con R)
-        if (btn_right & 0x01) state->buttons |= switch_y;
-        if (btn_right & 0x02) state->buttons |= switch_x;
-        if (btn_right & 0x04) state->buttons |= switch_b;
-        if (btn_right & 0x08) state->buttons |= switch_a;
-        if (btn_right & 0x40) state->buttons |= switch_r;
-        if (btn_right & 0x80) state->buttons |= switch_zr;
-
-        // Shared buttons
-        if (btn_shared & 0x01) state->buttons |= switch_minus;
-        if (btn_shared & 0x02) state->buttons |= switch_plus;
-        if (btn_shared & 0x04) state->buttons |= switch_rstick;
-        if (btn_shared & 0x08) state->buttons |= switch_lstick;
-        if (btn_shared & 0x10) state->buttons |= switch_home;
-        if (btn_shared & 0x20) state->buttons |= switch_capture;
-
-        // Left side buttons (Pro Controller / Joy-Con L)
-        if (btn_left & 0x01) state->buttons |= switch_down;
-        if (btn_left & 0x02) state->buttons |= switch_up;
-        if (btn_left & 0x04) state->buttons |= switch_right;
-        if (btn_left & 0x08) state->buttons |= switch_left;
-        if (btn_left & 0x40) state->buttons |= switch_l;
-        if (btn_left & 0x80) state->buttons |= switch_zl;
+        for (const auto& m : right_map)  if (btn_right & m.mask) state->buttons |= m.flag;
+        for (const auto& m : shared_map) if (btn_shared & m.mask) state->buttons |= m.flag;
+        for (const auto& m : left_map)   if (btn_left & m.mask) state->buttons |= m.flag;
     }
 
     // Parse analog stick data from standard input report
@@ -1062,22 +1058,22 @@ public:
         uint16_t buttons_raw = data[2] | (data[3] << 8);
         uint8_t hat = data[4];
 
-        // Parse buttons (bit positions may differ from standard mode)
+        // Parse buttons using lookup table (faster than 14 individual if statements)
+        static const struct { uint16_t mask; uint32_t flag; } button_map[] = {
+            { 0x0001, switch_y },      { 0x0002, switch_b },
+            { 0x0004, switch_a },      { 0x0008, switch_x },
+            { 0x0010, switch_l },      { 0x0020, switch_r },
+            { 0x0040, switch_zl },     { 0x0080, switch_zr },
+            { 0x0100, switch_minus },  { 0x0200, switch_plus },
+            { 0x0400, switch_lstick }, { 0x0800, switch_rstick },
+            { 0x1000, switch_home },   { 0x2000, switch_capture },
+        };
+
         state->buttons = 0;
-        if (buttons_raw & 0x0001) state->buttons |= switch_y;
-        if (buttons_raw & 0x0002) state->buttons |= switch_b;
-        if (buttons_raw & 0x0004) state->buttons |= switch_a;
-        if (buttons_raw & 0x0008) state->buttons |= switch_x;
-        if (buttons_raw & 0x0010) state->buttons |= switch_l;
-        if (buttons_raw & 0x0020) state->buttons |= switch_r;
-        if (buttons_raw & 0x0040) state->buttons |= switch_zl;
-        if (buttons_raw & 0x0080) state->buttons |= switch_zr;
-        if (buttons_raw & 0x0100) state->buttons |= switch_minus;
-        if (buttons_raw & 0x0200) state->buttons |= switch_plus;
-        if (buttons_raw & 0x0400) state->buttons |= switch_lstick;
-        if (buttons_raw & 0x0800) state->buttons |= switch_rstick;
-        if (buttons_raw & 0x1000) state->buttons |= switch_home;
-        if (buttons_raw & 0x2000) state->buttons |= switch_capture;
+        for (const auto& m : button_map) {
+            if (buttons_raw & m.mask)
+                state->buttons |= m.flag;
+        }
 
         // Parse D-pad/hat (0x08 = centered, 0x00-0x07 = directions)
         if (hat != 0x08) {
@@ -1523,13 +1519,22 @@ class HIDSource {
     {
         for (auto d : _devices) {
             if (d->_interrupt) {
-                int len = l2_recv(d->_interrupt,dst,dst_len);
-                if (len > 0) {
-                    _wii.hid(d,dst,len);
-                    _switch.hid(d,dst,len);
-                    return len;
+                int tmp_len = 0;
+                // Try up to 2 times to get fresher data without blocking
+                for (int attempts = 0; attempts < 2; attempts++) {
+                    int len = l2_recv(d->_interrupt, dst, dst_len);
+                    if (len > 0) {
+                        tmp_len = len;
+                    } else {
+                        break;  // No more data, exit early
+                    }
                 }
-                if (len < 0) {
+                if (tmp_len > 0) {
+                    _wii.hid(d,dst,tmp_len);
+                    _switch.hid(d,dst,tmp_len);
+                    return tmp_len;
+                }
+                if (tmp_len < 0) {
                     printf("disconnect\n");
                     d->disconnection_complete();
                 }

@@ -633,7 +633,7 @@ public:
         }
         _hilited = max(0,min(_hilited,c-1));
     }
-    
+
     int count()
     {
         switch (_tab) {
@@ -1010,7 +1010,7 @@ void gui_update()
     int n = hid_get(buf,sizeof(buf));    // called from emulation loop
     if (n > 0)
         gui_hid(buf,n);
-    
+
     n = get_hid_ir(buf);
     if (n > 0)
         gui_hid(buf,n);
@@ -1083,6 +1083,21 @@ static void ir(const uint8_t* j, int len)
     _last_pad = pad;
 }
 
+static void switch_gui()
+{
+    // Handle Switch controller input for GUI navigation
+    extern switch_state switch_states[4];
+
+    uint32_t pad = switch_states[0].buttons;
+    pad_key(switch_up,pad,82);       // up
+    pad_key(switch_down,pad,81);     // down
+    pad_key(switch_right,pad,79);    // right
+    pad_key(switch_left,pad,80);     // left
+    pad_key(switch_home,pad,58);     // home/gui
+    pad_key(switch_a,pad,40);        // enter (A button)
+    _last_pad = pad;
+}
+
 void gui_hid(const uint8_t* hid, int len)  // Parse HID event
 {
     if (hid[0] != 0xA1)
@@ -1094,7 +1109,10 @@ void gui_hid(const uint8_t* hid, int len)  // Parse HID event
     */
     switch (hid[1]) {
         case 0x01: keyboard(hid+1,len-1);   break;   // parse keyboard and maintain 1 key state
+        case 0x30: switch_gui();            break;   // Switch Pro/Joy-Con standard report
+        case 0x31: switch_gui();            break;   // Switch Pro/Joy-Con standard report with IMU
         case 0x32: wii();                   break;   // parse wii stuff: generic?
+        case 0x3F: switch_gui();            break;   // Switch simple HID mode
         case 0x42: ir(hid+2,len);           break;   // ir joy
     }
     _gui._emu->hid(hid+1,len-1);    // send raw events
