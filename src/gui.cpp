@@ -1109,8 +1109,6 @@ void gui_hid(const uint8_t* hid, int len)  // Parse HID event
     */
     switch (hid[1]) {
         case 0x01: keyboard(hid+1,len-1);   break;   // parse keyboard and maintain 1 key state
-        case 0x30: switch_gui();            break;   // Switch Pro/Joy-Con standard report
-        case 0x31: switch_gui();            break;   // Switch Pro/Joy-Con standard report with IMU
         case 0x32: wii();                   break;   // parse wii stuff: generic?
         case 0x3F: switch_gui();            break;   // Switch simple HID mode
         case 0x42: ir(hid+2,len);           break;   // ir joy

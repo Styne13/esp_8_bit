@@ -746,149 +746,6 @@ public:
         send_subcmd(s, state, SWITCH_SUBCMD_REQ_DEV_INFO, nullptr, 0);
     }
 
-    // Read factory stick calibration (subcommand 0x10)
-    void fsm_read_factory_stick_calibration(int s, switch_state* state)
-    {
-        state->init_state = SWITCH_STATE_READ_FACTORY_STICK_CAL;
-
-        // Determine address based on controller type
-        uint32_t spi_addr = (state->controller_type == SWITCH_CONTROLLER_TYPE_JCR)
-                            ? SWITCH_FACTORY_STICK_CAL_ADDR_RIGHT
-                            : SWITCH_FACTORY_STICK_CAL_ADDR_LEFT;
-        uint8_t bytes_to_read = SWITCH_FACTORY_STICK_CAL_SIZE;
-
-        // For Pro Controller, read both left and right
-        if (state->controller_type == SWITCH_CONTROLLER_TYPE_PRO)
-            bytes_to_read *= 2;
-
-        uint8_t data[5] = {
-            (uint8_t)(spi_addr & 0xFF),
-            (uint8_t)((spi_addr >> 8) & 0xFF),
-            (uint8_t)((spi_addr >> 16) & 0xFF),
-            (uint8_t)((spi_addr >> 24) & 0xFF),
-            bytes_to_read
-        };
-
-        send_subcmd(s, state, SWITCH_SUBCMD_SPI_FLASH_READ, data, 5);
-    }
-
-    // Read user stick calibration (subcommand 0x10)
-    void fsm_read_user_stick_calibration(int s, switch_state* state)
-    {
-        state->init_state = SWITCH_STATE_READ_USER_STICK_CAL;
-
-        uint32_t spi_addr = (state->controller_type == SWITCH_CONTROLLER_TYPE_JCR)
-                            ? SWITCH_USER_STICK_CAL_ADDR_RIGHT
-                            : SWITCH_USER_STICK_CAL_ADDR_LEFT;
-        uint8_t bytes_to_read = SWITCH_USER_STICK_CAL_SIZE;
-
-        if (state->controller_type == SWITCH_CONTROLLER_TYPE_PRO)
-            bytes_to_read *= 2;
-
-        uint8_t data[5] = {
-            (uint8_t)(spi_addr & 0xFF),
-            (uint8_t)((spi_addr >> 8) & 0xFF),
-            (uint8_t)((spi_addr >> 16) & 0xFF),
-            (uint8_t)((spi_addr >> 24) & 0xFF),
-            bytes_to_read
-        };
-
-        send_subcmd(s, state, SWITCH_SUBCMD_SPI_FLASH_READ, data, 5);
-    }
-
-    // Read factory IMU calibration (subcommand 0x10)
-    void fsm_read_factory_imu_calibration(int s, switch_state* state)
-    {
-        state->init_state = SWITCH_STATE_READ_FACTORY_IMU_CAL;
-
-        uint32_t spi_addr = SWITCH_FACTORY_IMU_CAL_ADDR;
-        uint8_t data[5] = {
-            (uint8_t)(spi_addr & 0xFF),
-            (uint8_t)((spi_addr >> 8) & 0xFF),
-            (uint8_t)((spi_addr >> 16) & 0xFF),
-            (uint8_t)((spi_addr >> 24) & 0xFF),
-            SWITCH_FACTORY_IMU_CAL_SIZE
-        };
-
-        send_subcmd(s, state, SWITCH_SUBCMD_SPI_FLASH_READ, data, 5);
-    }
-
-    // Set full report mode 0x30 (subcommand 0x03)
-    void fsm_set_full_report(int s, switch_state* state)
-    {
-        state->init_state = SWITCH_STATE_SET_FULL_REPORT;
-
-        uint8_t data[1] = {0x30};  // Standard full mode
-        send_subcmd(s, state, SWITCH_SUBCMD_SET_REPORT_MODE, data, 1);
-    }
-
-    // Enable/disable IMU (subcommand 0x40)
-    void fsm_enable_imu(int s, switch_state* state)
-    {
-        state->init_state = SWITCH_STATE_ENABLE_IMU;
-
-        uint8_t data[1] = {0x00};  // Disable IMU for now (can be 0x01 to enable)
-        send_subcmd(s, state, SWITCH_SUBCMD_ENABLE_IMU, data, 1);
-    }
-
-    // Update player LED (subcommand 0x30)
-    void fsm_update_led(int s, switch_state* state, uint8_t led_mask)
-    {
-        state->init_state = SWITCH_STATE_UPDATE_LED;
-
-        uint8_t data[1] = {led_mask};
-        send_subcmd(s, state, SWITCH_SUBCMD_SET_PLAYER_LEDS, data, 1);
-    }
-
-    // Mark controller as ready
-    void fsm_ready(switch_state* state)
-    {
-        state->init_state = SWITCH_STATE_READY;
-    }
-
-    // Process FSM - advance to next state
-    void process_fsm(InputDevice* d)
-    {
-        int slot = d->_wii_index;
-        if (slot == -1)
-            return;
-
-        switch_state* state = switch_states + slot;
-
-        switch (state->init_state) {
-            case SWITCH_STATE_SETUP:
-                fsm_request_device_info(d->_interrupt, state);
-                break;
-            case SWITCH_STATE_REQ_DEV_INFO:
-                fsm_read_factory_stick_calibration(d->_interrupt, state);
-                break;
-            case SWITCH_STATE_READ_FACTORY_STICK_CAL:
-                fsm_read_user_stick_calibration(d->_interrupt, state);
-                break;
-            case SWITCH_STATE_READ_USER_STICK_CAL:
-                fsm_read_factory_imu_calibration(d->_interrupt, state);
-                break;
-            case SWITCH_STATE_READ_FACTORY_IMU_CAL:
-                fsm_set_full_report(d->_interrupt, state);
-                break;
-            case SWITCH_STATE_SET_FULL_REPORT:
-                fsm_enable_imu(d->_interrupt, state);
-                break;
-            case SWITCH_STATE_ENABLE_IMU:
-                fsm_update_led(d->_interrupt, state, 0x01 << slot);
-                break;
-            case SWITCH_STATE_UPDATE_LED:
-                fsm_ready(state);
-                break;
-            case SWITCH_STATE_READY:
-                // Nothing to do
-                break;
-            default:
-                printf("Switch FSM: Unexpected state %d\n", state->init_state);
-                break;
-        }
-    }
-
     bool is_switch(InputDevice* d)
     {
         if (strncmp(d->_name.c_str(), "Pro Controller", 14) == 0)
@@ -944,7 +801,6 @@ public:
                     switch_states[i].cal_rx.max = switch_states[i].cal_ry.max = 3583;
 
                     d->_wii_index = i;
-                    process_fsm(d);
                     break;
                 }
             }
@@ -981,24 +837,6 @@ public:
         y->max = y->center + cal_y_max;
     }
 
-    // Calibrate analog stick value using calibration data
-    int32_t calibrate_axis(int32_t v, switch_cal_stick cal)
-    {
-        int32_t ret;
-        if (v > cal.center) {
-            ret = (v - cal.center) * 128;
-            ret /= (cal.max - cal.center);
-        } else {
-            ret = (cal.center - v) * -128;
-            ret /= (cal.center - cal.min);
-        }
-        // Clamp to 0-255 range
-        ret += 128;
-        if (ret < 0) ret = 0;
-        if (ret > 255) ret = 255;
-        return ret;
-    }
-
     // Parse button data from standard input report
     void parse_buttons(switch_state* state, const uint8_t* data)
     {
@@ -1028,24 +866,6 @@ public:
         for (const auto& m : right_map)  if (btn_right & m.mask) state->buttons |= m.flag;
         for (const auto& m : shared_map) if (btn_shared & m.mask) state->buttons |= m.flag;
         for (const auto& m : left_map)   if (btn_left & m.mask) state->buttons |= m.flag;
-    }
-
-    // Parse analog stick data from standard input report
-    void parse_sticks(switch_state* state, const uint8_t* data)
-    {
-        // Left stick: bytes 6, 7, 8
-        uint16_t lstick_x_raw = data[6] | ((data[7] & 0x0F) << 8);
-        uint16_t lstick_y_raw = (data[7] >> 4) | (data[8] << 4);
-
-        // Right stick: bytes 9, 10, 11
-        uint16_t rstick_x_raw = data[9] | ((data[10] & 0x0F) << 8);
-        uint16_t rstick_y_raw = (data[10] >> 4) | (data[11] << 4);
-
-        // Apply calibration
-        state->lstick_x = calibrate_axis(lstick_x_raw, state->cal_x);
-        state->lstick_y = calibrate_axis(lstick_y_raw, state->cal_y);
-        state->rstick_x = calibrate_axis(rstick_x_raw, state->cal_rx);
-        state->rstick_y = calibrate_axis(rstick_y_raw, state->cal_ry);
     }
 
     // Parse data from Simple HID mode (0x3F)
@@ -1093,73 +913,6 @@ public:
         state->rstick_y = data[12]; // High byte of right stick Y
     }
 
-    // Handle subcommand reply (report 0x21)
-    void handle_subcmd_reply(InputDevice* d, switch_state* state, const uint8_t* data, int len)
-    {
-        if (len < 16) {
-            return;
-        }
-
-        // Report structure:
-        // [0] = 0xA1 (input report)
-        // [1] = 0x21 (subcmd reply)
-        // [2] = timer
-        // [3] = battery / connection info
-        // [4-15] = button/stick status
-        // [16] = ACK info
-        // [17] = subcmd ID
-        // [18+] = reply data
-
-        uint8_t ack = data[16];
-        uint8_t subcmd_id = data[17];
-
-        if ((ack & 0x80) == 0) {
-            return;
-        }
-
-        // Handle specific subcommand replies
-        switch (subcmd_id) {
-            case SWITCH_SUBCMD_REQ_DEV_INFO:
-                if (len >= 21) {
-                    state->controller_type = data[20];
-                }
-                break;
-
-            case SWITCH_SUBCMD_SPI_FLASH_READ:
-                if (len >= 23) {
-                    uint32_t addr = data[18] | (data[19] << 8) | (data[20] << 16) | (data[21] << 24);
-                    int data_len = data[22];
-                    const uint8_t* spi_data = data + 23;
-
-                    // Process based on current FSM state
-                    switch (state->init_state) {
-                        case SWITCH_STATE_READ_FACTORY_STICK_CAL:
-                            if (state->controller_type == SWITCH_CONTROLLER_TYPE_PRO && data_len >= 18) {
-                                parse_stick_calibration(&state->cal_x, &state->cal_y, spi_data, true);
-                                parse_stick_calibration(&state->cal_rx, &state->cal_ry, spi_data + 9, false);
-                            } else if (data_len >= 9) {
-                                bool is_left = (state->controller_type == SWITCH_CONTROLLER_TYPE_JCL);
-                                if (is_left)
-                                    parse_stick_calibration(&state->cal_x, &state->cal_y, spi_data, true);
-                                else
-                                    parse_stick_calibration(&state->cal_rx, &state->cal_ry, spi_data, false);
-                            }
-                            break;
-                        case SWITCH_STATE_READ_USER_STICK_CAL:
-                            // User calibration is optional - just use factory values
-                            break;
-                        case SWITCH_STATE_READ_FACTORY_IMU_CAL:
-                            // IMU calibration - can be skipped for basic functionality
-                            break;
-                    }
-                }
-                break;
-        }
-
-        // Advance FSM after processing reply
-        process_fsm(d);
-    }
-
     void hid(InputDevice* d, const uint8_t* data, int len)
     {
         if (!is_switch(d))
@@ -1178,26 +931,6 @@ public:
         switch (data[0]) {
             case 0xA1:  // Input report
                 switch (data[1]) {
-                    case 0x21:  // Subcommand reply
-                        handle_subcmd_reply(d, state, data, len);
-                        // Also parse button/stick data embedded in the reply
-                        if (state->init_state == SWITCH_STATE_READY) {
-                            parse_buttons(state, data);
-                            parse_sticks(state, data);
-                            state->battery = (data[2] >> 4) & 0x0F;
-                        }
-                        break;
-
-                    case 0x30:  // Standard full mode (IMU data enabled)
-                    case 0x31:  // NFC/IR MCU mode
-                        if (state->init_state == SWITCH_STATE_READY) {
-                            memcpy(state->report, data, min((int)sizeof(state->report), len));
-                            parse_buttons(state, data);
-                            parse_sticks(state, data);
-                            state->battery = (data[2] >> 4) & 0x0F;
-                        }
-                        break;
-
                     case 0x3F:  // Simple HID mode (used when connected to non-Switch devices)
                         // Controller is in Simple HID mode - skip FSM and use it directly
                         if (state->init_state != SWITCH_STATE_READY) {
